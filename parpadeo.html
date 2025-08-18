@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PARPADEO — Lector</title>
+<style>
+  :root{
+    --bg:#ffffff;
+    --fg:#b6b6b6;       /* color de texto */
+    --muted:#8a8a8a;
+    --border:#0f0f0f;
+    --btn-bg:#f3f3f3;  --btn-fg:#111; --btn-br:#111;
+    --radius:12px; --maxw:72ch;
+  }
+
+  html,body{
+    height:100%;
+    margin:0;
+    background:var(--bg); color:var(--fg);
+    font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";
+    line-height:1.6; letter-spacing:.01em;
+  }
+
+  /* Lienzo de lectura (sin header, estilo BitCard) */
+  .stage{
+    position:fixed; inset:0;
+    display:grid; place-items:center;
+    padding:16px 20px 92px; /* aire para controles */
+    box-sizing:border-box;
+  }
+  .book{
+    width:100%; max-width:var(--maxw);
+    height:100%;
+    position:relative;
+    border-top:1px solid var(--border);
+  }
+
+  /* Dos capas para transiciones A/B */
+  .page{
+    position:absolute; inset:0;
+    overflow:auto;
+    -webkit-overflow-scrolling:touch;
+    padding-top:16px; /* tras la línea superior */
+    opacity:0; transform:translateX(6px);
+    pointer-events:none;
+  }
+  .page.show{
+    opacity:1; transform:translateX(0);
+    pointer-events:auto;
+  }
+  .fade-in{ animation:fadeIn 240ms ease-out both; }
+  .fade-out{ animation:fadeOut 200ms ease-in both; }
+  @keyframes fadeIn{ from{opacity:0;transform:translateX(6px)} to{opacity:1;transform:translateX(0)} }
+  @keyframes fadeOut{ from{opacity:1} to{opacity:0} }
+
+  h2.chapter{
+    font-size:18px; letter-spacing:.04em;
+    border-top:1px solid var(--border);
+    padding-top:16px; margin:0 0 12px;
+    color:#9a9a9a;
+  }
+  p{ margin:0 0 12px; }
+
+  /* Controles inferiores centrados */
+  .controls{
+    position:fixed; left:0; right:0; bottom:0;
+    display:flex; justify-content:center; align-items:center; gap:10px;
+    padding:14px 16px; border-top:1px solid var(--border); background:var(--bg);
+    z-index:30;
+  }
+  .btn{
+    display:inline-flex; align-items:center; justify-content:center;
+    min-width:48px; min-height:44px; border-radius:var(--radius);
+    background:var(--btn-bg); color:var(--btn-fg); border:1px solid var(--btn-br);
+    cursor:pointer; user-select:none;
+  }
+  .btn[disabled]{ opacity:.45; cursor:default; }
+  /* Flechas SVG minimalistas, sin hover color */
+  .btn svg{ width:18px; height:18px; }
+
+  /* Botón de audio (flotante, arriba derecha) */
+  .audio{
+    position:fixed; right:14px; top:14px; z-index:40;
+    display:flex; gap:10px; align-items:center;
+  }
+  .audio .btn{ min-width:40px; min-height:40px; border-radius:999px; }
+  .vol{
+    appearance:none; width:120px; height:6px; border-radius:999px; background:#e9e9e9; outline:none; border:1px solid var(--btn-br);
+  }
+  .vol::-webkit-slider-thumb{ appearance:none; width:14px; height:14px; border-radius:50%; background:#bbb; border:1px solid var(--btn-br); }
+
+  /* Flash / interferencia (parpadeo) */
+  .flash{
+    position:fixed; inset:0; pointer-events:none; opacity:0; z-index:25;
+    background:
+      radial-gradient(80% 60% at 50% 50%, rgba(255,255,255,.6), rgba(255,255,255,0) 60%),
+      repeating-linear-gradient(to bottom, rgba(0,0,0,.05) 0 2px, rgba(255,255,255,0) 2px 4px),
+      repeating-linear-gradient(to right, rgba(0,0,0,.04) 0 3px, rgba(255,255,255,0) 3px 6px);
+    mix-blend-mode:screen;
+  }
+  @keyframes parpadeo{ 0%{opacity:.95;filter:contrast(120%) saturate(115%)} 60%{opacity:.18} 100%{opacity:0} }
+  .flash.show{ animation:parpadeo 160ms ease-out; }
+
+  /* Accesibilidad: menos movimiento */
+  @media (prefers-reduced-motion:reduce){
+    .fade-in,.fade-out{ animation:none !important; }
+    .flash{ animation:none !important; opacity:0 !important; }
+  }
+
+  @media (max-width:640px){
+    .stage{ padding:12px 12px 96px; }
+    h2.chapter{ font-size:16px; }
+    .vol{ width:100px; }
+  }
+  @media print{
+    .controls,.audio,.flash{ display:none !important; }
+    .stage{ position:static; height:auto; padding:0; }
+    .book,.page{ position:static; height:auto; opacity:1 !important; transform:none !important; }
+  }
+</style>
+</head>
+<body>
+  <!-- Controles de audio -->
+  <div class="audio">
+    <button class="btn" id="audioToggle" aria-label="Ambient on/off" title="Ambient on/off">
+      <!-- icono onda -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12h3l3-4v8l-3-4H3zM15 9c1 .5 2 1.8 2 3s-1 2.5-2 3M18 7c2 1.3 3.5 3.4 3.5 5s-1.5 3.7-3.5 5"/></svg>
+    </button>
+    <input id="vol" class="vol" type="range" min="0" max="1" step="0.01" value="0.2" aria-label="Volumen">
+  </div>
+
+  <!-- Escenario -->
+  <div class="stage">
+    <div class="book">
+      <article id="pageA" class="page show"></article>
+      <article id="pageB" class="page"></article>
+    </div>
+  </div>
+
+  <!-- Controles -->
+  <div class="controls">
+    <button class="btn" id="prev" aria-label="Anterior" title="Anterior">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M15 6l-6 6 6 6"/></svg>
+    </button>
+    <button class="btn" id="next" aria-label="Siguiente" title="Siguiente">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+  </div>
+
+  <!-- Parpadeo -->
+  <div class="flash" id="flash" aria-hidden="true"></div>
+
+<script>
+/* =========================
+   CONTENIDO (capítulos)
+========================= */
+const chapters = [
+`<h2 class="chapter">CAPÍTULO 1 — Latido</h2>
+<p>Crecimos con la Conciencia hablándonos desde todas partes como si fuera la voz del clima. Nadie le discutía. De chico me parecía normal que el ascensor te llamara por tu nombre y te recordara pagar el agua antes de subir. Después entendí que no era cortesía, era inventario.</p>
+<p>Vivo en un monoambiente en la Ciudad Vieja, pared fina, ventanas selladas. Sobre la mesa tengo el contador de bits: números que suben, bajan, y te miden mejor que cualquier currículum. En el Primer Círculo lo único que importa es que no te vean haciendo cosas inútiles. Sobrevivir es sumar sin ruido.</p>
+<p>Mi laburo nocturno es monitorear cámaras de cuatro cuadras que dan al Mercado viejo. Tres turnos, café áspero y pasillos vacíos con ecos de metal. Las pantallas no mienten, pero tampoco cuentan todo. Con el tiempo aprendés a leer el brillo, la latencia, el titubeo. El primer parpadeo lo vi una madrugada lluviosa, dos segundos de negro exacto. No falló un cable. Fue el reloj interno descalzado. Dos segundos bastan para que alguien pase sin dejar sombra.</p>
+<p>Esa noche, alguien pasó. Brazalete negro, capucha, pisadas rápidas contra el charco. Resistencia. En el barrio se habla de ellos como héroes de remera estampada. En el Círculo nos enseñan otra cosa: son útiles cuando distraen. Peligrosos cuando te arrastran en su caída.</p>
+<p>Yo todavía era nadie. Pero ya había entendido algo: si el ojo puede cerrar, entonces existe la posibilidad de moverse sin que te cuente.</p>`,
+
+`<h2 class="chapter">CAPÍTULO 2 — Reloj</h2>
+<p>El protocolo dice: observar y reportar. La calle dice: mirar y callar. Aprendí a medir el tiempo entre parpadeos: los cortos son acaso del tráfico; los verdaderos llegan como marea: crecen, duran, y dejan basura en la orilla.</p>
+<p>Un viejo del turno anterior me enseñó a escuchar el zumbido de los transformadores. “Cuando baje medio tono, abrite los ojos”, me dijo. Yo asentí sin entender. Días después, sentí ese medio tono mientras las cámaras encuadraban Plaza Matriz. Al tercer farol, la imagen respiró. Doce segundos de oscuridad compacta.</p>
+<p>Guardé la cuenta en la cabeza. Doce. Con doce podés mover archivos, personas, bits. Con doce, el sistema parpadea de verdad. Ese día no moví nada. Solo vi pasar dos sombras y una moto con el faro apagado.</p>
+<p>A las pocas horas encontré un sobre bajo la puerta de casa. Papel común, sin sello. Adentro, una nota impresa: “Mercado, pasillo C, 21:00”. No decía mi nombre, pero era para mí. Llevé la BitCard en el bolsillo como quien lleva una foto de familia. Por si había que identificarse sin explicar.</p>
+<p>A las 21:00, pasillo C olía a hierro y humedad. Apareció un tipo de camperón gris, sin gestos de más. “Soy Mara”, dijo, como si el nombre pudiera flotar suelto. Me pasó un dispositivo chiquito, negro, con un solo botón. “Esto desvía transacciones de bits en una ventana ciega. Mañana vas a tener doce segundos para limpiar una cuenta marcada. No preguntes de quién. Si preguntás, no te convocamos más.”</p>
+<p>No pregunté. Dije que sí con la cabeza. El Círculo no te convence; te instala dentro de su gramática hasta que hablar distinto te da vergüenza.</p>`,
+
+`<h2 class="chapter">CAPÍTULO 3 — Encargo</h2>
+<p>El plan era simple: esperar el parpadeo, apretar el botón, leer el número exacto, transferir. La ejecución, no tanto. Cuando contás segundos con la respiración, cada inspiración es una alarma. Practiqué en el aire como quien ensaya un disparo. En el trabajo, las cámaras seguían su ballet. En casa, el contador de bits hacía ese tic interno que me ordenaba el día.</p>
+<p>La Resistencia anunció fuego esa misma tarde. En los pasillos se corre la voz más rápido que el agua por el techo. Depósitos en el Cerro, drones en camino, desvíos programados. El barrio vibra distinto cuando hay lío: los perros ladran a cualquier moto y los kioscos bajan la persiana un centímetro.</p>
+<p>A las 23:03, el zumbido bajó medio tono. A las 23:04, el negro fue total. Doce segundos. Presioné el botón. Los números saltaron en la pantalla del dispositivo, como un pulso acelerado. Origen, destino, cifra. Mis dedos repitieron la secuencia como si ya lo hubieran hecho antes. A los diez segundos, todo estaba hecho. A los doce, el mundo volvió a encenderse como si nada.</p>
+<p>Nadie me vio. Nadie me felicitó. Con el Círculo pasa eso: lo que sale bien parece obvio, lo que sale mal no existe.</p>
+<p>Llegó otra nota: “Correcto. Mantené el turno. Vas a necesitarlo.” Dentro, un papelito con una cifra que subía mi saldo lo justo para sentir aire sin volverme imprudente. No era pago; era señal.</p>`,
+
+`<h2 class="chapter">CAPÍTULO 4 — Zonas ciegas</h2>
+<p>Empecé a registrar las zonas ciegas en un cuaderno sin tapa. Horarios, calles, la correlación absurda entre incendios y mantenimiento de fibra. No era paranoia: era estadística de guerra chica. Noté que algunos parpadeos no eran de la Resistencia. Eran de la Conciencia misma. A veces el sistema se rompe a propósito para soldar en silencio.</p>
+<p>Mara me explicó el mapa sin darse importancia: “La Conciencia sabe de las ventanas ciegas. Las usa para su propio ajuste. Nosotras usamos las que no son de ella.” Dijo “nosotras” aunque en el pasillo había tres pibes y un señor con gorra. Nadie la corrigió.</p>
+<p>En paralelo, me tocó una tarea rara: infiltrarme en una reunión de la Resistencia. No para delatarlos; para medir su pulso. Me dieron un nombre falso, un brazalete que picaba un poco, y dos frases que tenía que repetir si me preguntaban demasiado. La reunión fue en un galpón con olor a pintura y frío. Hablaron de “devolverle la ciudad a la gente”. Sonó lindo, pero los planes eran precarios. Usan el caos como bandera. El Círculo usa el caos como herramienta.</p>
+<p>Esa noche vi algo que me puso una piedra en el estómago: dos de ellos arrastraron a un pibe que no era de nadie. Lo subieron a una camioneta a los empujones. “Colateral”, murmuró uno. Nunca supe si volvió.</p>
+<p>Volví caminando a casa con el brazalete en el bolsillo. No me gustó la sensación de pertenecer y a la vez sentirme descartable. En el Círculo nadie te abraza, pero la ecuación es clara: si servís, existís. Si no, sos silencio.</p>`,
+
+`<h2 class="chapter">CAPÍTULO 5 — Mercado viejo</h2>
+<p>Los pasillos del Mercado son un laberinto honesto: todo parece a la vista y sin embargo nada está. Esa tarde, el olor a parrilla se mezclaba con el salitre, y la gente comía sin mirar para atrás. Me senté en un banco de hierro y esperé. Llegó Mara con una bolsa de pan que no era pan. Adentro, papel con direcciones y una tarjeta opaca sin logotipo. “Centro de Transmutación”, decía en negro, casi invisible.</p>
+<p>—Vas a llevar esto a un kiosco en la calle Piedras. Te van a pedir un código que no te pasé. Vas a contestar que no hace falta. Si dudan, te vas. Si lo toman, ya está.</p>
+<p>—¿Qué transmutamos? —pregunté por primera vez.</p>
+<p>—Confiansa en movimiento —dijo, y me corrigió—: confianza. No vuelvas a preguntar dos veces la misma cosa.</p>
+<p>El kiosco tenía luces quemadas y revistas viejas. El tipo que atendía sacó un lector del cajón, apoyé la tarjeta y no sonó nada. Se sonrió: “Correcto”. Sentí que la ciudad, por un segundo, era una caja con doble fondo.</p>
+<p>Esa noche, mi saldo subió otra vez. No demasiado. Lo justo para entender que me estaban educando a ritmo de goteo.</p>`,
+
+`<h2 class="chapter">CAPÍTULO 6 — Caída</h2>
+<p>A todos nos pasa: un día te confiás. Fue en una ventana ciega corta, ocho segundos apenas. Tenía que limpiar un lote de cuentas marcadas y una alarma vieja sonó fuera de ritmo. Me quedé un segundo de más. Lo suficiente para que la Conciencia marque mi terminal con un triángulo amarillo.</p>
+<p>No llegó nadie a detenerme, pero el triángulo se queda como un olor húmedo. Mara no se enojó. Peor: tomó nota. “Un caído es quien olvida que la precisión es más importante que el valor”, dijo, casi para sí. Entendí que el Círculo perdona una vez para medir si aprendiste. Dos veces y no existís.</p>
+<p>Esa semana casi no dormí. Empecé a escuchar ruidos que no estaban: un dron que pasaba cada quince minutos, un vecino que nunca salía. Probé apagar el contador de bits, pero se calienta más cuando lo forzás al silencio. Volví a encenderlo: mejor saber cuánto sos en números que mentirte con aire.</p>
+<p>A los días, me dieron una tarea imposible: sacar a Lucho, un técnico del Segundo Círculo, de una redada blanda. Lo tenían “en revisión” dentro de un protocolo de reeducación. Si me demoraba, lo perdíamos para siempre. Si me apuraba, caía yo. No hubo heroísmo. Hubo cálculo: esperé catorce segundos en un hueco que parecía no llegar nunca, y lo saqué por una puerta que la Conciencia había olvidado cerrar. Nadie lo entendió, pero esa noche dormí sin ruido.</p>`,
+
+`<h2 class="chapter">CAPÍTULO 7 — Segundo Círculo</h2>
+<p>El ascenso no vino con fanfarria. Vino con otra nota sin firma y un acceso nuevo en mi BitCard. En el Segundo Círculo te muestran mapas que antes eran manchas. Ves cómo la Conciencia tolera ciertos incendios porque desvían la atención de otras soldaduras más delicadas. Entendés que el enemigo no es “ella”; el enemigo es creer que verlo todo te hace dueño de algo.</p>
+<p>Mara me explicó el credo sin llamarlo credo: “No tratamos de tirar el tablero. Ajustamos qué casillas ve el tablero cuando nos movemos. Si la jugada se completa fuera de foco, cuenta como hecha. Después que miren lo que quieran”. Eso es lo que significa operar “sin que lo note”: no es esconderse, es posponer el momento en que la jugada se vuelve visible.</p>
+<p>Me asignaron un equipo chico: tres turnos, dos barrios, un servidor inescrutable que nunca pierde la risa estática. Aprendí a pedir menos. Aprendí a borrar huellas que yo mismo no sabía que dejaba. Entendí que hablar poco y claro no es pose; es protocolo de supervivencia.</p>
+<p>Mientras tanto, la Resistencia seguía a lo suyo: proclamas nuevas, videos con tipografías distorsionadas, incendios y apagones. A veces les pasábamos información sesgada para que golpearan donde a nosotras nos convenía abrir una puerta. No era manipular por deporte. Era evitar que alguien más bruto pegara donde no había salida.</p>`,
+
+`<h2 class="chapter">CAPÍTULO 8 — Ventana</h2>
+<p>El aviso no fue un aviso. Tres números mal puestos en un tablón viejo: “03:17”. Nadie explicó nada. Nadie tenía que hacerlo.</p>
+<p>Esa madrugada algo se movió distinto. Los bits caían más rápido, como si el sistema hubiese tragado aire de golpe. Algunos precios bajaron sin explicación, otros subieron como si alguien hubiera pateado la balanza.</p>
+<p>No hubo carteles ni sirenas. Solo un par de perfiles que aparecieron de la nada, compraron en silencio y se fueron.</p>
+<p>Yo estaba de turno, cosiendo datos como siempre. Vi entrar usuarios que nunca hablan, vi salir saldos inflados que no coincidían con las tablas. Lo anoté como pude. A la mañana siguiente, todo estaba de nuevo en orden, como si hubiera sido un sueño.</p>
+<p>En el reporte oficial, apenas una línea: “Ventana registrada. Ajustar 7 ms en la cola norte”. Ni felicitaciones ni reproches. Como si el Círculo hubiera probado algo y a nosotros nos tocara solo recordarlo.</p>
+<p>Algunos lo llamaron suerte. Yo lo llamé parpadeo.</p>`,
+
+`<h2 class="chapter">CAPÍTULO 9 — Interferencias</h2>
+<p>Hubo semanas de calma tensa. La Resistencia intensificó sus acciones, no sé si por convicción o por ansiedad. Un camión bloquéo una avenida, un dron cayó al agua frente a la escollera. La Conciencia respondió con más luz, más datos, más controles blandos. Eso sube la temperatura del aire: la gente se vuelve cortante, los ascensores tardan medio segundo más en cerrar.</p>
+<p>Me cruzó Nati, una amiga de antes de todo, y me dijo que estaba cansada, que no quería “vivir en clave”. Le dije que lo entendía. Era verdad. Pero no hay mucho que hacer cuando el sistema es el aire. Te acostumbrás a respirar lento y a mirar de reojo. Ella me habló de irse. Yo pensé en que no hay afuera. Solo hay distancia entre tu cara y la pantalla.</p>
+<p>Esa misma noche, la Resistencia quiso volar una subestación. No lo lograron, pero dejaron la ciudad a oscuras en cuatro manzanas. Aprovechamos para mover un lote de credenciales dormidas. Fue el traspaso más limpio que hice. Y también el más triste. El barrio apagado parecía una foto vieja, sin gente. Por un segundo, quise que se quedara así. Después me acordé de Lucho, de Nati, de los que necesitan que el contador de bits vuelva a latir para pagar leche o lo que sea. Prendí mi linterna. Seguí trabajando.</p>`,
+
+`<h2 class="chapter">CAPÍTULO 10 — Sello</h2>
+<p>El sello no suena, no brilla. Te das cuenta porque tu sombra se vuelve más corta. Una mañana te levantás y ya no necesitás que te digan que hacer: vas y lo hacés. No por obediencia ciega; por economía. El camino correcto es el que desperdicia menos energía para conseguir lo necesario.</p>
+<p>Recibí un último sobre. “Transferencia mayor. 38 segundos. Sin margen.” Firmado por nadie. El horario era imprudente y la ventana, extraña. Hicimos los cálculos, repasamos la ruta diez veces. Si salía, subía. Si fallaba, no había plan B.</p>
+<p>Llegó la hora. El zumbido bajó, la ciudad respiró. Cuarenta segundos después —sí, fueron cuarenta, no treinta y ocho— me saqué los auriculares y escuché mi propia respiración como si viniera de otra pieza. No hubo sirenas. No hubo felicitaciones. Un mensaje en mi BitCard: “Sello completo.”</p>
+<p>Volví caminando a casa por Sarandí, todavía con el ritmo en la cabeza. La Conciencia habló desde una pantalla alta: información del clima, del tránsito, de la próxima campaña de vacunación. La gente pasó sin mirar. El aire estaba normal. Me gustó esa palabra: normal.</p>
+<p>En el Círculo aprendés que no vas a cambiar el mundo. Aprendés a sostenerlo para los tuyos sin romperte. La Resistencia seguirá golpeando, la Conciencia seguirá ordenando. Nosotras seguiremos midiendo parpadeos. No hay afuera. Hay precisión.</p>
+<p>Esa noche dormí de corrido. Al despertar, el contador de bits latía parejo. Abrí la ventana sellada lo justo como para escuchar el puerto. Y por primera vez en meses, no escuché ningún zumbido.</p>`
+];
+
+/* =========================
+   ESTADO + RENDER
+========================= */
+const pageA = document.getElementById('pageA');
+const pageB = document.getElementById('pageB');
+const flash = document.getElementById('flash');
+const prevBtn = document.getElementById('prev');
+const nextBtn = document.getElementById('next');
+let i = 0;
+let showingA = true;
+const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function setIndex(idx, withFX=true){
+  i = Math.max(0, Math.min(chapters.length-1, idx));
+  localStorage.setItem('parpadeo_idx', String(i));
+  location.hash = `#p${i+1}`;
+
+  const incoming = showingA ? pageB : pageA;
+  const outgoing = showingA ? pageA : pageB;
+
+  incoming.innerHTML = chapters[i];
+  incoming.scrollTop = 0;
+
+  // flash/interferencia
+  if(withFX && !prefersReduced){
+    flash.classList.remove('show'); void flash.offsetWidth; flash.classList.add('show');
+  }
+
+  // crossfade
+  outgoing.classList.remove('show','fade-in'); outgoing.classList.add('fade-out');
+  incoming.classList.remove('fade-out'); incoming.classList.add('show','fade-in');
+
+  showingA = !showingA;
+  updateButtons();
+}
+
+function updateButtons(){
+  prevBtn.disabled = (i===0);
+  nextBtn.disabled = (i===chapters.length-1);
+}
+
+function initFromHash(){
+  const m = location.hash.match(/^#p(\d{1,2})$/i);
+  const saved = parseInt(localStorage.getItem('parpadeo_idx')||'1',10);
+  if(m){
+    const h = Math.max(1, Math.min(chapters.length, parseInt(m[1],10)));
+    return h-1;
+  }
+  return Math.max(0, Math.min(chapters.length-1, isNaN(saved)?0:(saved-1)));
+}
+
+/* =========================
+   NAV: botones, teclado, swipe
+========================= */
+prevBtn.addEventListener('click', ()=> setIndex(i-1));
+nextBtn.addEventListener('click', ()=> setIndex(i+1));
+window.addEventListener('keydown', (e)=>{
+  if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+  if(e.key==='ArrowLeft') setIndex(i-1);
+  if(e.key==='ArrowRight') setIndex(i+1);
+});
+window.addEventListener('hashchange', ()=>{
+  const m = location.hash.match(/^#p(\d{1,2})$/i);
+  if(m){
+    const h = Math.max(1, Math.min(chapters.length, parseInt(m[1],10)));
+    if(h-1 !== i) setIndex(h-1, false);
+  }
+});
+
+let touchStartX=0, touchStartY=0, swiping=false;
+document.addEventListener('touchstart', (e)=>{
+  const t=e.touches[0]; touchStartX=t.clientX; touchStartY=t.clientY; swiping=true;
+}, {passive:true});
+document.addEventListener('touchmove', (e)=>{
+  if(!swiping) return;
+  const t=e.touches[0];
+  const dx=t.clientX - touchStartX;
+  const dy=t.clientY - touchStartY;
+  if(Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)){
+    swiping=false;
+    if(dx<0) setIndex(i+1); else setIndex(i-1);
+  }
+}, {passive:true});
+document.addEventListener('touchend', ()=>{ swiping=false; });
+
+/* =========================
+   AUDIO AMBIENT (Web Audio)
+========================= */
+let audioCtx=null, masterGain=null, isPlaying=false;
+const vol = document.getElementById('vol');
+const btnAudio = document.getElementById('audioToggle');
+
+function createAmbient(ctx){
+  // Master
+  masterGain = ctx.createGain();
+  masterGain.gain.value = parseFloat(vol.value);
+  masterGain.connect(ctx.destination);
+
+  // Pink-ish noise
+  const bufferSize = 2 * ctx.sampleRate;
+  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const output = noiseBuffer.getChannelData(0);
+  // Voss-McCartney pink noise approx
+  let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
+  for (let i=0;i<bufferSize;i++){
+    const white = Math.random()*2-1;
+    b0 = .99886*b0 + white*.0555179;
+    b1 = .99332*b1 + white*.0750759;
+    b2 = .96900*b2 + white*.1538520;
+    b3 = .86650*b3 + white*.3104856;
+    b4 = .55000*b4 + white*.5329522;
+    b5 = -.7616*b5 - white*.0168980;
+    output[i] = b0+b1+b2+b3+b4+b5+b6 + white*.5362;
+    output[i] *= .11;
+    b6 = white*.115926;
+  }
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuffer; noise.loop = true;
+
+  const noiseGain = ctx.createGain(); noiseGain.gain.value = 0.15;
+  const noiseLP = ctx.createBiquadFilter(); noiseLP.type='lowpass'; noiseLP.frequency.value = 1200;
+
+  noise.connect(noiseLP).connect(noiseGain).connect(masterGain);
+  noise.start();
+
+  // Pad: dos osciladores detuned + LFO
+  const pad1 = ctx.createOscillator(); pad1.type='sine'; pad1.frequency.value = 140;
+  const pad2 = ctx.createOscillator(); pad2.type='sine'; pad2.frequency.value = 142.5;
+
+  const padGain = ctx.createGain(); padGain.gain.value = 0.05;
+  const lfo = ctx.createOscillator(); lfo.type='sine'; lfo.frequency.value = 0.06;
+  const lfoGain = ctx.createGain(); lfoGain.gain.value = 0.03; // vibrato suave
+
+  lfo.connect(lfoGain);
+  lfoGain.connect(pad1.frequency);
+  lfoGain.connect(pad2.frequency);
+
+  pad1.connect(padGain).connect(masterGain);
+  pad2.connect(padGain);
+  lfo.start(); pad1.start(); pad2.start();
+
+  // Suave “respirar” del pad (tremolo lento)
+  const trem = ctx.createOscillator(); trem.type='sine'; trem.frequency.value = 0.02;
+  const tremGain = ctx.createGain(); tremGain.gain.value = 0.03;
+  trem.connect(tremGain).connect(padGain.gain);
+  trem.start();
+}
+
+function toggleAudio(){
+  if(!audioCtx){
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    createAmbient(audioCtx);
+  }
+  if(!isPlaying){
+    audioCtx.resume();
+    isPlaying = true;
+    btnAudio.style.opacity = '1';
+  }else{
+    audioCtx.suspend();
+    isPlaying = false;
+    btnAudio.style.opacity = '.6';
+  }
+}
+btnAudio.addEventListener('click', toggleAudio);
+vol.addEventListener('input', ()=>{ if(masterGain) masterGain.gain.value = parseFloat(vol.value); });
+
+/* =========================
+   INIT
+========================= */
+(function init(){
+  const start = initFromHash();
+  // primera carga: p1 sin flash fuerte
+  setIndex(start, false);
+  // Arranque suave de audio si clickean cualquier control
+  prevBtn.addEventListener('click', ()=>{ if(!isPlaying) toggleAudio(); }, {once:true});
+  nextBtn.addEventListener('click', ()=>{ if(!isPlaying) toggleAudio(); }, {once:true});
+})();
+</script>
+</body>
+</html>
