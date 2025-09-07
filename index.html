@@ -26,14 +26,14 @@
   .stage{
     position:fixed; inset:0;
     display:grid; place-items:center;
-    padding:16px 20px 92px; /* aire para controles */
+    padding:16px 20px 92px; /* aire para controles inferiores */
     box-sizing:border-box;
   }
   .book{
     width:100%; max-width:var(--maxw);
     height:100%;
     position:relative;
-    border-top:1px solid var(--border);
+    /* (antes tenía border-top, removido) */
   }
 
   /* Dos capas para transiciones A/B */
@@ -41,7 +41,7 @@
     position:absolute; inset:0;
     overflow:auto;
     -webkit-overflow-scrolling:touch;
-    padding-top:16px; /* tras la línea superior */
+    /* padding-top removido para quitar el espacio de la línea superior */
     opacity:0; transform:translateX(6px);
     pointer-events:none;
   }
@@ -56,8 +56,8 @@
 
   h2.chapter{
     font-size:18px; letter-spacing:.04em;
-    border-top:1px solid var(--border);
-    padding-top:16px; margin:0 0 12px;
+    /* border-top removido para quitar la línea de cada capítulo */
+    padding-top:0; margin:0 0 12px;
     color:#9a9a9a;
   }
   p{ margin:0 0 12px; }
@@ -78,17 +78,6 @@
   .btn[disabled]{ opacity:.45; cursor:default; }
   /* Flechas SVG minimalistas, sin hover color */
   .btn svg{ width:18px; height:18px; }
-
-  /* Botón de audio (flotante, arriba derecha) */
-  .audio{
-    position:fixed; right:14px; top:14px; z-index:40;
-    display:flex; gap:10px; align-items:center;
-  }
-  .audio .btn{ min-width:40px; min-height:40px; border-radius:999px; }
-  .vol{
-    appearance:none; width:120px; height:6px; border-radius:999px; background:#e9e9e9; outline:none; border:1px solid var(--btn-br);
-  }
-  .vol::-webkit-slider-thumb{ appearance:none; width:14px; height:14px; border-radius:50%; background:#bbb; border:1px solid var(--btn-br); }
 
   /* Flash / interferencia (parpadeo) */
   .flash{
@@ -111,25 +100,15 @@
   @media (max-width:640px){
     .stage{ padding:12px 12px 96px; }
     h2.chapter{ font-size:16px; }
-    .vol{ width:100px; }
   }
   @media print{
-    .controls,.audio,.flash{ display:none !important; }
+    .controls,.flash{ display:none !important; }
     .stage{ position:static; height:auto; padding:0; }
     .book,.page{ position:static; height:auto; opacity:1 !important; transform:none !important; }
   }
 </style>
 </head>
 <body>
-  <!-- Controles de audio -->
-  <div class="audio">
-    <button class="btn" id="audioToggle" aria-label="Ambient on/off" title="Ambient on/off">
-      <!-- icono onda -->
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12h3l3-4v8l-3-4H3zM15 9c1 .5 2 1.8 2 3s-1 2.5-2 3M18 7c2 1.3 3.5 3.4 3.5 5s-1.5 3.7-3.5 5"/></svg>
-    </button>
-    <input id="vol" class="vol" type="range" min="0" max="1" step="0.01" value="0.2" aria-label="Volumen">
-  </div>
-
   <!-- Escenario -->
   <div class="stage">
     <div class="book">
@@ -313,96 +292,11 @@ document.addEventListener('touchmove', (e)=>{
 document.addEventListener('touchend', ()=>{ swiping=false; });
 
 /* =========================
-   AUDIO AMBIENT (Web Audio)
-========================= */
-let audioCtx=null, masterGain=null, isPlaying=false;
-const vol = document.getElementById('vol');
-const btnAudio = document.getElementById('audioToggle');
-
-function createAmbient(ctx){
-  // Master
-  masterGain = ctx.createGain();
-  masterGain.gain.value = parseFloat(vol.value);
-  masterGain.connect(ctx.destination);
-
-  // Pink-ish noise
-  const bufferSize = 2 * ctx.sampleRate;
-  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-  const output = noiseBuffer.getChannelData(0);
-  // Voss-McCartney pink noise approx
-  let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
-  for (let i=0;i<bufferSize;i++){
-    const white = Math.random()*2-1;
-    b0 = .99886*b0 + white*.0555179;
-    b1 = .99332*b1 + white*.0750759;
-    b2 = .96900*b2 + white*.1538520;
-    b3 = .86650*b3 + white*.3104856;
-    b4 = .55000*b4 + white*.5329522;
-    b5 = -.7616*b5 - white*.0168980;
-    output[i] = b0+b1+b2+b3+b4+b5+b6 + white*.5362;
-    output[i] *= .11;
-    b6 = white*.115926;
-  }
-  const noise = ctx.createBufferSource();
-  noise.buffer = noiseBuffer; noise.loop = true;
-
-  const noiseGain = ctx.createGain(); noiseGain.gain.value = 0.15;
-  const noiseLP = ctx.createBiquadFilter(); noiseLP.type='lowpass'; noiseLP.frequency.value = 1200;
-
-  noise.connect(noiseLP).connect(noiseGain).connect(masterGain);
-  noise.start();
-
-  // Pad: dos osciladores detuned + LFO
-  const pad1 = ctx.createOscillator(); pad1.type='sine'; pad1.frequency.value = 140;
-  const pad2 = ctx.createOscillator(); pad2.type='sine'; pad2.frequency.value = 142.5;
-
-  const padGain = ctx.createGain(); padGain.gain.value = 0.05;
-  const lfo = ctx.createOscillator(); lfo.type='sine'; lfo.frequency.value = 0.06;
-  const lfoGain = ctx.createGain(); lfoGain.gain.value = 0.03; // vibrato suave
-
-  lfo.connect(lfoGain);
-  lfoGain.connect(pad1.frequency);
-  lfoGain.connect(pad2.frequency);
-
-  pad1.connect(padGain).connect(masterGain);
-  pad2.connect(padGain);
-  lfo.start(); pad1.start(); pad2.start();
-
-  // Suave “respirar” del pad (tremolo lento)
-  const trem = ctx.createOscillator(); trem.type='sine'; trem.frequency.value = 0.02;
-  const tremGain = ctx.createGain(); tremGain.gain.value = 0.03;
-  trem.connect(tremGain).connect(padGain.gain);
-  trem.start();
-}
-
-function toggleAudio(){
-  if(!audioCtx){
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    createAmbient(audioCtx);
-  }
-  if(!isPlaying){
-    audioCtx.resume();
-    isPlaying = true;
-    btnAudio.style.opacity = '1';
-  }else{
-    audioCtx.suspend();
-    isPlaying = false;
-    btnAudio.style.opacity = '.6';
-  }
-}
-btnAudio.addEventListener('click', toggleAudio);
-vol.addEventListener('input', ()=>{ if(masterGain) masterGain.gain.value = parseFloat(vol.value); });
-
-/* =========================
    INIT
 ========================= */
 (function init(){
   const start = initFromHash();
-  // primera carga: p1 sin flash fuerte
-  setIndex(start, false);
-  // Arranque suave de audio si clickean cualquier control
-  prevBtn.addEventListener('click', ()=>{ if(!isPlaying) toggleAudio(); }, {once:true});
-  nextBtn.addEventListener('click', ()=>{ if(!isPlaying) toggleAudio(); }, {once:true});
+  setIndex(start, false); // primera carga sin flash fuerte
 })();
 </script>
 </body>
